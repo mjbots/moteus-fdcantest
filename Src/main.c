@@ -42,6 +42,7 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+FDCAN_HandleTypeDef hfdcan2;
 
 /* USER CODE BEGIN PV */
 
@@ -50,6 +51,7 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_FDCAN2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -68,7 +70,7 @@ int main(void)
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
-  
+
 
   /* MCU Configuration--------------------------------------------------------*/
 
@@ -88,7 +90,48 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_FDCAN2_Init();
   /* USER CODE BEGIN 2 */
+
+  // Set the lines necessary for the fdcanusb board to work.
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, 0);  // Standby inactive
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, 0);  // Termination active
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, 0);  // Shutdown inactive
+
+  if (HAL_FDCAN_Start(&hfdcan2) != HAL_OK) {
+    Error_Handler();
+  }
+
+  if (HAL_FDCAN_ActivateNotification(
+          &hfdcan2, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0) != HAL_OK) {
+    Error_Handler();
+  }
+
+  FDCAN_ProtocolStatusTypeDef can_status = {};
+
+  FDCAN_RxHeaderTypeDef rx_header = {};
+  uint8_t rx_data[64] = {};
+
+  FDCAN_TxHeaderTypeDef tx_header = {};
+  uint8_t tx_data[64] = {};
+
+  tx_header.Identifier = 0x8001;
+  tx_header.IdType = FDCAN_EXTENDED_ID;
+  tx_header.TxFrameType = FDCAN_DATA_FRAME;
+  tx_header.DataLength = FDCAN_DLC_BYTES_5;
+  tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+  tx_header.BitRateSwitch = FDCAN_BRS_ON;
+  tx_header.FDFormat = FDCAN_FD_CAN;
+  tx_header.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+  tx_header.MessageMarker = 0;
+
+  tx_data[0] = 0x01;  // write 1 int8
+  tx_data[1] = 0x00;  // to register 0
+  tx_data[2] = 0x00;  // and the value is 0 (STOP)
+  tx_data[3] = 0x15;  // read 2 int16s
+  tx_data[4] = 0x00;  // starting from register 0
+
+  uint32_t last_emit = 0;
 
   /* USER CODE END 2 */
 
@@ -99,6 +142,33 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    // The SysTick timer counts down.
+    const uint32_t now = HAL_GetTick();
+    const uint32_t delta = now - last_emit;
+    if (delta > 500) {  // We send at 2Hz (500ms)
+      HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);  // PB3 is TX
+      last_emit = now;
+
+      HAL_FDCAN_AddMessageToTxFifoQ(
+          &hfdcan2, &tx_header, &tx_data[0]);
+    }
+
+    if (HAL_FDCAN_GetRxMessage(
+            &hfdcan2, FDCAN_RX_FIFO0,
+            &rx_header, &rx_data[0]) == HAL_OK) {
+      // We have data.
+      HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_4);  // PB4 is labeled as RX
+    }
+
+    // If we have gotten into a BusOff state, recover.
+    HAL_FDCAN_GetProtocolStatus(&hfdcan2, &can_status);
+    if (can_status.BusOff) {
+      HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);  // PB6 is labeled as COM
+      hfdcan2.Instance->CCCR &= ~FDCAN_CCCR_INIT;
+    }
+
+
   }
   /* USER CODE END 3 */
 }
@@ -111,11 +181,12 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-  /** Configure the main internal regulator output voltage 
+  /** Configure the main internal regulator output voltage
   */
   HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1_BOOST);
-  /** Initializes the CPU, AHB and APB busses clocks 
+  /** Initializes the CPU, AHB and APB busses clocks
   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
@@ -131,7 +202,7 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  /** Initializes the CPU, AHB and APB busses clocks 
+  /** Initializes the CPU, AHB and APB busses clocks
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
@@ -144,6 +215,65 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+  /** Initializes the peripherals clocks
+  */
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;
+  PeriphClkInit.FdcanClockSelection = RCC_FDCANCLKSOURCE_PCLK1;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief FDCAN2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_FDCAN2_Init(void)
+{
+
+  /* USER CODE BEGIN FDCAN2_Init 0 */
+
+  /* USER CODE END FDCAN2_Init 0 */
+
+  /* USER CODE BEGIN FDCAN2_Init 1 */
+
+  /* USER CODE END FDCAN2_Init 1 */
+  hfdcan2.Instance = FDCAN2;
+  hfdcan2.Init.FrameFormat = FDCAN_FRAME_FD_BRS;
+  hfdcan2.Init.Mode = FDCAN_MODE_NORMAL;
+  hfdcan2.Init.AutoRetransmission = ENABLE;
+  hfdcan2.Init.TransmitPause = ENABLE;
+  hfdcan2.Init.ProtocolException = DISABLE;
+  hfdcan2.Init.NominalPrescaler = 1;
+  hfdcan2.Init.NominalSyncJumpWidth = 16;
+  hfdcan2.Init.NominalTimeSeg1 = 56;
+  hfdcan2.Init.NominalTimeSeg2 = 28;
+  hfdcan2.Init.DataPrescaler = 1;
+  hfdcan2.Init.DataSyncJumpWidth = 5;
+  hfdcan2.Init.DataTimeSeg1 = 11;
+  hfdcan2.Init.DataTimeSeg2 = 5;
+  hfdcan2.Init.StdFiltersNbr = 0;
+  hfdcan2.Init.ExtFiltersNbr = 0;
+  hfdcan2.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
+  if (HAL_FDCAN_Init(&hfdcan2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* USER CODE BEGIN FDCAN2_Init 2 */
+
+  if (HAL_FDCAN_ConfigGlobalFilter(
+          &hfdcan2,
+          FDCAN_ACCEPT_IN_RX_FIFO0,
+          FDCAN_ACCEPT_IN_RX_FIFO0,
+          FDCAN_FILTER_REMOTE,
+          FDCAN_FILTER_REMOTE) != HAL_OK) {
+    Error_Handler();
+  }
+  /* USER CODE END FDCAN2_Init 2 */
+
 }
 
 /**
@@ -159,24 +289,16 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11|GPIO_PIN_14|GPIO_PIN_15|GPIO_PIN_3 
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11|GPIO_PIN_14|GPIO_PIN_15|GPIO_PIN_3
                           |GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PB11 PB14 PB15 PB3 
+  /*Configure GPIO pins : PB11 PB14 PB15 PB3
                            PB4 PB5 PB6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_11|GPIO_PIN_14|GPIO_PIN_15|GPIO_PIN_3 
+  GPIO_InitStruct.Pin = GPIO_PIN_11|GPIO_PIN_14|GPIO_PIN_15|GPIO_PIN_3
                           |GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB12 PB13 */
-  GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF9_FDCAN2;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 }
@@ -193,6 +315,10 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+  while (1) {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4,
+                      (HAL_GetTick() / 500) & 0x01);  // PB4 is labeled as PWR
+  }
 
   /* USER CODE END Error_Handler_Debug */
 }
@@ -206,7 +332,7 @@ void Error_Handler(void)
   * @retval None
   */
 void assert_failed(uint8_t *file, uint32_t line)
-{ 
+{
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line number,
      tex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
