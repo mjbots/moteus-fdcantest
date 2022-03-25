@@ -128,7 +128,7 @@ int main(void)
   tx_data[0] = 0x01;  // write 1 int8
   tx_data[1] = 0x00;  // to register 0
   tx_data[2] = 0x00;  // and the value is 0 (STOP)
-  tx_data[3] = 0x15;  // read 2 int16s
+  tx_data[3] = 0x16;  // read 2 int16s
   tx_data[4] = 0x00;  // starting from register 0
 
   uint32_t last_emit = 0;
